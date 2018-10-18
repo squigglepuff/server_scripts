@@ -1,0 +1,364 @@
+#!/usr/bin/perl
+
+use strict;
+use warnings;
+use Term::ReadKey;
+
+# First declare some globals.
+our $hLog = undef; # This is the log file handle to /var/log/scripts/createuser.log
+
+# First we need to check if we're root
+if ($ENV{'USER'} !~ m/^root$/)
+{
+    Print("FATAL ERROR: You're not root! You MUST run this as root!");
+    exit(-1);
+}
+
+# We need to open the log.
+OpenLog();
+
+my $user = "";
+my $passwd = "no";
+my $isPlexy = "n";
+
+my $resp = "no";
+
+while ($resp =~ m/^(|[nN][oO]?)$/)
+{
+    # We now need to ask for a username.
+    Print("Please enter a username: ", 1);
+    $user = ReadLine(0);
+    $user =~ s/\n//g;
+
+    my $re_passwd = "yes";
+    my $passCount = 0;
+
+    # Next, we need a password.
+    # We're going to do this in a loop. It allows 3 attempts at the password then quits if all unsuccessful.
+    ReadMode('noecho');
+    while ("$passwd" ne "$re_passwd")
+    {
+        if (3 <= $passCount)
+        {
+            Log("FATAL ERROR: Failed to set password after 3 attempts! Aborting!");
+            CloseLog();
+            exit(-1);
+        }
+        
+        Print("Please enter a password: ", 1);
+        $passwd = ReadLine(0);
+        $passwd =~ s/\n//g;
+        print("\n");
+
+        # SECURITY.
+        Print("Please re-enter a password: ", 1);
+        $re_passwd = ReadLine(0);
+        $re_passwd =~ s/\n//g;
+        print("\n");
+        
+        if ("$passwd" ne "$re_passwd")
+        {
+            ++$passCount;
+            Print("WARN: Passwords don't match! Please try again. ATTEMPT: $passCount");
+        }
+    }
+    ReadMode('restore');
+
+    # Next, is this user allowed upload for Plexy?
+    Print("Is this a \"Plexy\" contributor? (y/N): ", 1);
+    $isPlexy = ReadLine(0);
+    $isPlexy =~ s/\n//g;
+    print("\n");
+
+    while ("$isPlexy" !~ m/^([yY]([eEsS])?|[nN][oO]?)$/)
+    {
+        Print("Please enter \"y\" or \"n\": ", 1);
+        $isPlexy = ReadLine(0);
+        $isPlexy =~ s/\n//g;
+    }
+
+    # Lastly, ask if the data they've entered is OK!
+    Print("");
+    Print("Username: $user");
+    Print("Password: $passwd");
+
+    if ("$isPlexy" =~ m/^[yY]([eEsS])?$/)
+    {
+        Print("Is a \"Plexy\" contributor.");
+    }
+    else
+    {
+        Print("Is a NOT \"Plexy\" contributor.");
+    }
+
+    Print("Is this OK? (Y/n) ", 1);
+    $resp = ReadLine(0);
+    $resp =~ s/\n//g;
+    
+    if ($resp !~ m/^[yY]([eEsS])?$/)
+    {
+        Print("");
+    }
+}
+Print("");
+
+# Encrypt the password.
+$passwd = `echo '$passwd' | openssl passwd -1 -stdin`;
+$passwd =~ s/\n//g;
+
+# Log what we're making!
+Log("INFO: Creating the following user");
+Log("INFO: Username = $user");
+Log("INFO: Password = $passwd");
+
+if ("$isPlexy" =~ m/^[yY]([eEsS])?$/)
+{
+    Log("INFO: Is a \"Plexy\" contributor.");
+}
+else
+{
+    Log("INFO: Is a NOT \"Plexy\" contributor.");
+}
+
+# We need to do this in a precise order:
+# 1. Make user with the password and group set correctly.
+# 2. Make the user home.
+# 3. Copy over the skeleton files from "/root/nexusadmin/.skel_user".
+# 4. Create the /srv/media directory for the user.
+# 5. Make the symlink to /srv/media/$user in home.
+# 6. IF APPLICABLE: Make the plexy symlink in ~/My_Media
+
+# (1, 2, 3) First, make the user!
+Log("CREATE: Making user \"$user\"....", 1);
+if ("$isPlexy" =~ m/^[yY]([eEsS])?$/)
+{
+    # Is a plexy contributor.
+    system("useradd -d '/home/$user' -g plex -p '$passwd' -s '/bin/bash' $user");
+}
+else
+{
+    # Isn't a plexy contributor.
+    system("useradd -d '/home/$user' -p '$passwd' -s '/bin/bash' $user");
+}
+
+if (0 != $?)
+{
+    Log("FATAL ERROR: Was unable to create user: $!");
+    CloseLog();
+    exit($?);
+}
+Log("[DONE]");
+
+# (4) Next, make their media directory!
+Log("CREATE: Making user's media directory on /srv/media....", 1);
+system("mkdir /srv/media/$user");
+
+if (0 != $?)
+{
+    Log("FATAL ERROR: Was unable to create user media: $!");
+    exit($?);
+}
+
+# Chown it correctly.
+if ("$isPlexy" =~ m/^[yY]([eEsS])?$/)
+{
+    # Is a plexy contributor.
+    system("chown -R  $user:plex /srv/media/$user");
+}
+else
+{
+    # Isn't a plexy contributor.
+    system("chown -R  $user:$user /srv/media/$user");
+}
+
+if (0 != $?)
+{
+    Log("FATAL ERROR: Was unable to chown user media: $!");
+    CloseLog();
+    exit($?);
+}
+Log("[DONE]");
+
+# (5) Make the symlink in their home directory.
+Log("CREATE: Making user's media symlink....", 1);
+system("ln -s /srv/media/$user /home/$user/My_Media");
+
+if (0 != $?)
+{
+    Log("FATAL ERROR: Was unable to create user's media symlink: $!");
+    CloseLog();
+    exit($?);
+}
+Log("[DONE]");
+
+# (6) IF APPLICABLE: Make another symlink to plexy media.
+if ("$isPlexy" =~ m/^[yY]([eEsS])?$/)
+{
+    # Is a plexy contributor.
+    Log("CREATE: Making user's plexy symlink....", 1);
+    system("ln -s /srv/media/plexy /srv/media/$user/plexy");
+    
+    if (0 != $?)
+    {
+        Log("FATAL ERROR: Was unable to create user's media symlink: $!");
+        CloseLog();
+        exit($?);
+    }
+    Log("[DONE]");
+}
+
+# FINISHED!
+Log("INFO: User $user has been created!");
+
+# Lastly, close the log.
+CloseLog();
+
+sub Print
+{
+    my($line, $nobreak) = @_;
+    
+    my $outLine = "";
+    
+    if ("$line" eq "")
+    {
+        # Insert a horizontal break.
+        $outLine = "========================";
+    }
+    else
+    {       
+        $outLine = "$line";
+     
+        # We need to check for colors and IF they're supported, colorize the output.
+        # THIS IS A DIRTY HACK FOR DETECTING COLORS!
+        my $numColors = `tput colors`;
+        if (0 < $numColors)
+        {
+            # We have colors!
+            $outLine = "\e[33m[\e[32m" . getLoggingTime() . "\e[33m]\e[0m $line";
+            
+            # We now need to do some clever RegEx to colorize certain key words and phrases.
+            if ("$outLine" =~ m/.*(FATAL)?ERROR.*/)
+            {
+                # These are colored RED.
+                $outLine =~ s/((FATAL)?\ ERROR)/\e[1;31m$1\e[0m/;
+            }
+            elsif ("$outLine" =~ m/.*WARN.*/)
+            {
+                # These are colored YELLOW.
+                $outLine =~ s/(WARN)/\e[33m$1\e[0m/;
+            }
+            elsif ("$outLine" =~ m/.*EXCEPTION.*/)
+            {
+                # These are colored CYAN
+                $outLine =~ s/(EXCEPTION)/\e[36m$1\e[0m/;
+            }
+            elsif ("$outLine" =~ m/.*INFO.*/)
+            {
+                # These are colored BLUE
+                $outLine =~ s/(INFO)/\e[34m$1\e[0m/;
+            }
+            elsif ("$outLine" =~ m/.*DEBUG.*/)
+            {
+                # These are colored PURPLE
+                $outLine =~ s/(DEBUG)/\e[35m$1\e[0m/;
+            }
+            elsif ("$outLine" =~ m/.*CREATE.*/)
+            {
+                # These are colored BOLD GREEN
+                $outLine =~ s/(CREATE)/\e[1;32m$1\e[0m/;
+            }
+
+            if ("$outLine" =~ m/.*\[DONE\].*/)
+            {
+                print("\e[33m[\e[32mDONE\e[33m]\e[0m\n");
+                return 1;
+            }
+        }
+    }
+    
+    if (!defined($nobreak) || 1 != $nobreak)
+    {      
+        # Output the text!
+        print("$outLine\n");
+    }
+    else
+    {      
+        # Output the text!
+        print("$outLine");
+    }
+}
+
+sub Log
+{
+    my($line, $nobreak, $noprint) = @_;
+    
+    if (!defined($line))
+    {
+        Print("EXCEPTION: Undefined string passed to Log! [ Log() : createuser ]");
+    }
+    
+    if (!defined($hLog))
+    {
+        OpenLog();
+    }
+    
+    if ("$line" =~ m/.*\[DONE\].*/)
+    {
+        # Log this entry!
+        print($hLog "$line\n");
+    }    
+    elsif (!defined($nobreak) || 1 != $nobreak)
+    {
+        # Log this entry!
+        print($hLog "[".getLoggingTime()."] $line\n");
+    }
+    else
+    {
+        # Log this entry!
+        print($hLog "[".getLoggingTime()."] $line");
+    }
+    
+    if (!defined($noprint) || 1 != $noprint)
+    {
+        # Output the text!
+        Print("$line");
+    }
+}
+
+sub OpenLog
+{
+    if (!defined($hLog) || tell($hLog) == -1)
+    {
+        # File handle isn't open, so open it!
+        open($hLog, ">>", "/var/log/scripts/createuser.log") or Print("FATAL ERROR: Unable to open log file: $!") && Print("DEBUG: Check and make sure '/var/log/scripts/createuser.log' exists and is writable!") && exit(-1);
+        
+        print($hLog "====> OPENED LOG FOR ".GetCurrentDate()." <====\n");
+    }
+}
+
+sub CloseLog
+{
+    if (defined($hLog) && tell($hLog) != -1)
+    {
+        # File handle is open, close it out.
+        print($hLog "====> CLOSED LOG FOR ".GetCurrentDate()." <====\n\n");
+        close($hLog) or Print("FATAL ERROR: Unable to open log file: $!") && exit(-1);
+    }
+}
+
+# PRIVATE!
+# Used to gain a timestamp!
+# Code courtesy of Shizeon via StackOverflow.
+sub getLoggingTime
+{
+    my ($sec,$min,$hour,$mday,$mon,$year,$wday,$yday,$isdst)=localtime(time);
+    my $nice_timestamp = sprintf ( "%02d:%02d:%02d", $hour,$min,$sec);
+    return $nice_timestamp;
+}
+
+sub GetCurrentDate
+{
+    my ($sec,$min,$hour,$mday,$mon,$year,$wday,$yday,$isdst)=localtime(time);
+    my $nice_timestamp = sprintf ( "%04d-%02d-%02d", ($year+1900),$mon,$mday);
+    return $nice_timestamp;
+}

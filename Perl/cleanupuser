@@ -1,0 +1,79 @@
+#!/usr/bin/perl -w
+=desc
+
+       CleanUp User Home
+    (c) 2016 Travis M Ervin
+
+    Usage: /nexus/scripts/cleanupuser [option] <user>
+    
+    Options:
+        -u  User to clean
+        -h  Print help
+        
+    This script cleans up a user's home once they've either been deleted or revoked access from DataNexus. 
+
+=cut
+
+use strict;
+use warnings;
+
+# First, grab the username and make sure it's valid!
+if (!defined($ARGV[0]) || $ARGV[0] !~ m/^[a-zA-Z0-9]+/)
+{
+    print("\e[31mFATAL ERROR:\e[0m You must specify a valid username!\n");
+    exit(-1);
+}
+
+my $user = $ARGV[0];
+
+# We want to check and see if the user exists!
+system("grep '^$user:\/.*' /etc/nexususers > /dev/null");
+if (0 != $?)
+{
+    print("\e[31mFATAL ERROR:\e[0m $!\n");
+    exit(-1);
+}
+
+print("\e[33m[\e[32mCleanup Home\e[33m]\e[0m Cleaning $user home...\n");
+
+# Grab the user's home location.
+my $home = `grep '^$user:\/.*' /etc/nexususers | cut -d : -f2`;
+$home =~ s/\n//g;
+
+if ("$home" =~ m/(\/\w)+/)
+{
+    # We need to perform some additional checks.
+    # Check to make sure the user still has their ".nexus_id" file.
+    if (-f "$home/.nexus_id")
+    {
+        # Good, now we can clean home.
+        # We want to keep these files/directories!
+        my $keep = {"$home/.zshrc" => 0, "$home/.bashrc" => 0, "$home/My_Media" => 0, "$home/config" => 0, "$home/config/krb_key" => 0, 
+                    "$home/config/realm.key" => 0, "$home/.ssh" => 0, "$home/.ssh/known_hosts" => 0, "$home/.ssh/id_nexus" => 0, 
+                    "$home/.ssh/id_nexus.pub" => 0, "$home/.nexus_id" => 0};
+        
+        opendir(my $dirHandle, "$home") or die("$!\n");
+        
+        while (readdir($dirHandle))
+        {
+            # First, check to see if the file is one we don't touch.
+            if (!defined($keep->{"$_"}))
+            {
+                # It's not, so we're gonna delete it!
+            }
+        }
+        
+        closedir($dirHandle);
+        
+    }
+    else
+    {
+        print("\e[31mFATAL ERROR:\e[0m Nexus ID file not found! Must be a system user. ABORTING\n");
+        exit(-1);
+    }
+}
+else
+{
+    print("\e[31mFATAL ERROR:\e[0m No home found!\n");
+    exit(-1);
+}

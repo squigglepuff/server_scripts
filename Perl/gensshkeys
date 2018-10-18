@@ -1,0 +1,250 @@
+#!/usr/bin/perl
+
+use strict;
+use warnings;
+use Term::ReadKey;
+
+# First declare some globals.
+our $hLog = undef; # This is the log file handle to /var/log/scripts/createuser.log
+
+# First we need to check if we're root
+if ($ENV{'USER'} !~ m/^root$/)
+{
+    Print("FATAL ERROR: You're not root! You MUST run this as root!");
+    exit(-1);
+}
+
+# We need to open the log.
+OpenLog();
+
+# Now, we need to get the username.
+Print("Please enter a username: ", 1);
+my $user = ReadLine(0);
+$user =~ s/\n//g;
+
+# Check to see if this user even exists and we can get to his home directory.
+system("grep -i $user /etc/passwd 2>&1 >> /dev/null");
+
+if (0 != $?)
+{
+    Log("FATAL ERROR: Cannot create keys for $user as they don't exist! Aborting!");
+    CloseLog();
+    exit(-1);
+}
+
+if (-d "/home/$user")
+{
+    # We found the home. Now look for their ~/.ssh directory.
+    if (!(-d "/home/$user/.ssh"))
+    {
+        # Doesn't exist, so make it.
+        system("mkdir /home/$user/.ssh && chown $user /home/$user/.ssh 2>&1 >> /dev/null");
+        
+        if (0 != $?)
+        {
+            Log("FATAL ERROR: Unable to create $user's .ssh directory! Aborting!");
+            CloseLog();
+            exit(-1);
+        }
+    }
+    
+    # Generate the keys.
+    Log("CREATE: Making 8,192 bit SSH keys for $user...", 1);
+    system("ssh-keygen -b 8192 -f '/home/$user/.ssh/id_nexus' -N '' 2>&1 >> /dev/null");
+    if (0 != $?)
+    {
+        Log("FATAL ERROR: Unable to create $user's keys! Aborting!");
+        CloseLog();
+        exit(-1);
+    }
+    Log("[DONE]");
+    
+    Log("CREATE: Creating PEM key for Filezilla/puTTY...", 1);
+    system("openssl rsa -in '/home/$user/.ssh/id_nexus' -out '/home/$user/.ssh/id_nexus.pem' -outform PEM 2>&1 >> /dev/null");
+    if (0 != $?)
+    {
+        Log("FATAL ERROR: Unable to create $user's PEM key! Aborting!");
+        CloseLog();
+        exit(-1);
+    }
+    Log("[DONE]");
+    
+    Log("INFO: Adding public key to \"/home/$user/.ssh/authorized_keys\"...", 1);
+    system("cat /home/$user/.ssh/id_nexus.pub >> /home/$user/.ssh/authorized_keys 2>&1 >> /dev/null");
+    Log("[DONE]");
+    
+    if (0 != $?)
+    {
+        Log("WARN: Was unable to add public key to \"authorized_keys\", you'll need to do this manually!");
+    }
+    
+    Log("INFO: Chown'ing /home/$user/.ssh...", 1);
+    system("chown -R $user /home/$user/.ssh 2>&1 >> /dev/null");
+    if (0 != $?)
+    {
+        Log("FATAL ERROR: Unable to create $user's PEM key! Aborting!");
+        CloseLog();
+        exit(-1);
+    }
+    Log("[DONE]");
+    
+    Log("INFO: Finshed creating SSH keys for $user!");
+}
+else
+{
+    Log("FATAL ERROR: Unable to locate this user's home! Aborting!");
+    CloseLog();
+    exit(-1);
+}
+
+CloseLog();
+
+sub Print
+{
+    my($line, $nobreak) = @_;
+    
+    my $outLine = "";
+    
+    if ("$line" eq "")
+    {
+        # Insert a horizontal break.
+        $outLine = "========================";
+    }
+    else
+    {       
+        $outLine = "$line";
+     
+        # We need to check for colors and IF they're supported, colorize the output.
+        # THIS IS A DIRTY HACK FOR DETECTING COLORS!
+        my $numColors = `tput colors`;
+        if (0 < $numColors)
+        {
+            # We have colors!
+            $outLine = "\e[33m[\e[32m" . getLoggingTime() . "\e[33m]\e[0m $line";
+            
+            # We now need to do some clever RegEx to colorize certain key words and phrases.
+            if ("$outLine" =~ m/.*(FATAL)?ERROR.*/)
+            {
+                # These are colored RED.
+                $outLine =~ s/((FATAL)?\ ERROR)/\e[1;31m$1\e[0m/;
+            }
+            elsif ("$outLine" =~ m/.*WARN.*/)
+            {
+                # These are colored YELLOW.
+                $outLine =~ s/(WARN)/\e[33m$1\e[0m/;
+            }
+            elsif ("$outLine" =~ m/.*EXCEPTION.*/)
+            {
+                # These are colored CYAN
+                $outLine =~ s/(EXCEPTION)/\e[36m$1\e[0m/;
+            }
+            elsif ("$outLine" =~ m/.*INFO.*/)
+            {
+                # These are colored BLUE
+                $outLine =~ s/(INFO)/\e[34m$1\e[0m/;
+            }
+            elsif ("$outLine" =~ m/.*DEBUG.*/)
+            {
+                # These are colored PURPLE
+                $outLine =~ s/(DEBUG)/\e[35m$1\e[0m/;
+            }
+            elsif ("$outLine" =~ m/.*CREATE.*/)
+            {
+                # These are colored BOLD GREEN
+                $outLine =~ s/(CREATE)/\e[1;32m$1\e[0m/;
+            }
+
+            if ("$outLine" =~ m/.*\[DONE\].*/)
+            {
+                print("\e[33m[\e[32mDONE\e[33m]\e[0m\n");
+                return 1;
+            }
+        }
+    }
+    
+    if (!defined($nobreak) || 1 != $nobreak)
+    {      
+        # Output the text!
+        print("$outLine\n");
+    }
+    else
+    {      
+        # Output the text!
+        print("$outLine");
+    }
+}
+
+sub Log
+{
+    my($line, $nobreak, $noprint) = @_;
+    
+    if (!defined($line))
+    {
+        Print("EXCEPTION: Undefined string passed to Log! [ Log() : createuser ]");
+    }
+    
+    if (!defined($hLog))
+    {
+        OpenLog();
+    }
+    
+    if ("$line" =~ m/.*\[DONE\].*/)
+    {
+        # Log this entry!
+        print($hLog "$line\n");
+    }    
+    elsif (!defined($nobreak) || 1 != $nobreak)
+    {
+        # Log this entry!
+        print($hLog "[".getLoggingTime()."] $line\n");
+    }
+    else
+    {
+        # Log this entry!
+        print($hLog "[".getLoggingTime()."] $line");
+    }
+    
+    if (!defined($noprint) || 1 != $noprint)
+    {
+        # Output the text!
+        Print("$line", $nobreak);
+    }
+}
+
+sub OpenLog
+{
+    if (!defined($hLog) || tell($hLog) == -1)
+    {
+        # File handle isn't open, so open it!
+        open($hLog, ">>", "/var/log/scripts/gensshkeys.log") or Print("FATAL ERROR: Unable to open log file: $!") && Print("DEBUG: Check and make sure '/var/log/scripts/gensshkeys.log' exists and is writable!") && exit(-1);
+        
+        print($hLog "====> OPENED LOG FOR ".GetCurrentDate()." <====\n");
+    }
+}
+
+sub CloseLog
+{
+    if (defined($hLog) && tell($hLog) != -1)
+    {
+        # File handle is open, close it out.
+        print($hLog "====> CLOSED LOG FOR ".GetCurrentDate()." <====\n\n");
+        close($hLog) or Print("FATAL ERROR: Unable to open log file: $!") && exit(-1);
+    }
+}
+
+# PRIVATE!
+# Used to gain a timestamp!
+# Code courtesy of Shizeon via StackOverflow.
+sub getLoggingTime
+{
+    my ($sec,$min,$hour,$mday,$mon,$year,$wday,$yday,$isdst)=localtime(time);
+    my $nice_timestamp = sprintf ( "%02d:%02d:%02d", $hour,$min,$sec);
+    return $nice_timestamp;
+}
+
+sub GetCurrentDate
+{
+    my ($sec,$min,$hour,$mday,$mon,$year,$wday,$yday,$isdst)=localtime(time);
+    my $nice_timestamp = sprintf ( "%04d-%02d-%02d", ($year+1900),$mon,$mday);
+    return $nice_timestamp;
+}
